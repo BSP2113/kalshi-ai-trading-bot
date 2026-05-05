@@ -353,6 +353,14 @@ def cmd_history(args: argparse.Namespace) -> None:
                     )
 
             # Blocked trades summary
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS blocked_trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticker TEXT NOT NULL, category TEXT NOT NULL,
+                    side TEXT NOT NULL, amount REAL NOT NULL,
+                    reason TEXT NOT NULL, score REAL, blocked_at TEXT NOT NULL
+                )
+            """)
             cursor2 = await db.execute("""
                 SELECT COUNT(*) FROM blocked_trades
             """)

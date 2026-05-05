@@ -687,6 +687,7 @@ class SafeCompounder:
                     side="no",
                     action="buy",
                     count=contracts,
+                    type_="limit",
                     no_price=price_cents,
                 )
                 order = r.get("order", {})
