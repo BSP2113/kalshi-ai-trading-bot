@@ -89,7 +89,7 @@ python cli.py run --paper          # paper trading
 python cli.py run --live           # live trading (real money)
 ```
 
-Defaults: 15% max drawdown, 45% min confidence, 3% max position size, 30% max sector concentration, quarter-Kelly. All configurable in `src/config/settings.py`.
+Defaults: 15% max drawdown, 65% min confidence, 3% max position size, 30% max sector concentration, quarter-Kelly, intraday only (≤24h expiry). All configurable in `src/config/settings.py`.
 
 ### 2. Safe Compounder — `python cli.py run --safe-compounder`
 
@@ -198,8 +198,8 @@ kelly_fraction         = 0.25    # Quarter-Kelly (conservative)
 
 # Market filtering
 min_volume             = 500     # Minimum contract volume
-max_time_to_expiry_days = 14     # How far out to trade
-min_confidence_to_trade = 0.45   # Minimum AI confidence to enter
+max_time_to_expiry_days = 1      # Intraday only (≤24h expiry)
+min_confidence_to_trade = 0.65   # Minimum AI confidence to enter
 
 # LLM (OpenRouter)
 primary_model          = "anthropic/claude-sonnet-4.5"
@@ -354,7 +354,7 @@ The bot did not kill itself — something external ended the process.
 
 This is expected behavior, not a bug. The example strategies are conservative by design:
 
-- **AI Directional** requires confidence ≥ 45%, category score ≥ 30, and is gated by drawdown / sector caps. On many days, no markets clear all four filters.
+- **AI Directional** requires confidence ≥ 65%, edge ≥ 8%, category score ≥ 30, intraday expiry (≤24h), and is gated by drawdown / sector caps. On many days, no markets clear all filters.
 - **Safe Compounder** requires NO ask > 80¢ AND edge > 5¢. Most NO-side markets don't meet both.
 
 If you want more activity, lower the thresholds in `src/config/settings.py` (or the relevant strategy file) — but that means taking lower-edge bets. Or write your own strategy that targets the markets you actually have an edge on. This repo is a toolkit; the example thresholds are starting points.

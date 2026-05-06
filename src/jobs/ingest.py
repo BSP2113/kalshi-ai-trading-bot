@@ -105,12 +105,14 @@ async def process_and_queue_markets(
         max_bid_ask_spread: float = 0.20   # INCREASED: Allow even wider spreads (was 0.15, now 20¢)
         min_confidence_for_long_term: float = 0.40  # DECREASED: Lower confidence required (was 0.5, now 40%)
 
+        max_expiry_ts = time.time() + settings.trading.max_time_to_expiry_days * 86400
+        min_expiry_ts = time.time() + 1800  # skip markets expiring in under 30 min
         eligible_markets = [
             m
             for m in markets_to_upsert
             if m.volume >= min_volume
-            # REMOVED TIME RESTRICTION - we can now trade markets with ANY deadline!
-            # Dynamic exit strategies will handle timing automatically
+            and m.expiration_ts <= max_expiry_ts
+            and m.expiration_ts >= min_expiry_ts
             and (
                 not settings.trading.preferred_categories
                 or m.category in settings.trading.preferred_categories

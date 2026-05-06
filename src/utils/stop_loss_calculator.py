@@ -101,10 +101,9 @@ class StopLossCalculator:
         stop_loss_price = max(0.01, min(0.99, stop_loss_price))
         take_profit_price = max(0.01, min(0.99, take_profit_price))
         
-        # Calculate maximum hold time based on time to expiry
-        # Hold for maximum 50% of time to expiry, or 72 hours, whichever is less
-        max_hold_hours = min(72, time_to_expiry_days * 24 * 0.5)
-        max_hold_hours = max(6, max_hold_hours)  # Minimum 6 hours
+        # Calculate maximum hold time — intraday bias: cap at 8h, floor at 2h
+        max_hold_hours = min(8, time_to_expiry_days * 24 * 0.5)
+        max_hold_hours = max(2, max_hold_hours)
         
         return {
             'stop_loss_price': round(stop_loss_price, 2),

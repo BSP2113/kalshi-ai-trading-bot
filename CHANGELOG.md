@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (2026-05-05)
+- **Intraday-only mode**: market ingestion now filters to markets expiring within 24 hours; markets expiring in under 30 minutes are skipped (`ingest.py`)
+- **Raised confidence floor**: `min_confidence_to_trade` 45% → 65%; `min_confidence_threshold` 45% → 65% (`settings.py`)
+- **Tightened edge requirements**: `MIN_EDGE_REQUIREMENT` 4% → 8%; high-confidence edge 3% → 7%; medium-confidence edge 5% → 10%; low-confidence edge 8% → 15% (`edge_filter.py`)
+- **Raised confidence floor in edge filter**: `MIN_CONFIDENCE_FOR_TRADE` 35% → 60%
+- **Max hold time capped at 8 hours** (was 72h), floor raised to 2 hours (`stop_loss_calculator.py`)
+- **`max_time_to_expiry_days`**: 14 → 1
+- **`min_trade_edge`**: 8% → 12%; `min_confidence_for_large_size`: 50% → 70% (`settings.py`)
+- **WEATHER** category remains hard-blocked regardless of score
+
 ### Added
 - Initial public release of Kalshi AI Trading Bot
 - Multi-agent AI decision engine with Forecaster, Critic, and Trader agents

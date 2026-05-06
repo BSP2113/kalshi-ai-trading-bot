@@ -77,12 +77,10 @@ class TradingConfig:
     
     # Market filtering criteria — DISCIPLINED
     min_volume: float = 500.0           # SANE: Higher volume requirement (was 200 beast mode)
-    max_time_to_expiry_days: int = 14   # SANE: Shorter timeframes (was 30)
+    max_time_to_expiry_days: int = 1    # INTRADAY: Only markets expiring within 24 hours
     
-    # AI decision making — DATA-DRIVEN THRESHOLDS  
-    min_confidence_to_trade: float = 0.45   # LOOSENED: 45% confidence minimum (was 60%, approved 2026-03-29)
-                                           # Based on analysis: 65% was too conservative, bot finding 0 eligible markets
-                                           # NCAAB NO-side showed 74% WR at +10% ROI, suggesting value at lower thresholds
+    # AI decision making
+    min_confidence_to_trade: float = 0.65   # Confident picks only — require meaningful conviction
     
     # Category-specific confidence adjustments (applied as multipliers to base threshold)
     category_confidence_adjustments: Dict[str, float] = field(default_factory=lambda: {
@@ -130,9 +128,8 @@ class TradingConfig:
     high_confidence_market_odds: float = 0.90 # Market price to look for
     high_confidence_expiry_hours: int = 24   # Max hours until expiry
 
-    # AI trading criteria - MORE PERMISSIVE
-    max_analysis_cost_per_decision: float = 0.15  # INCREASED: Allow higher cost per decision (was 0.10, now 0.15)
-    min_confidence_threshold: float = 0.45  # DECREASED: Lower confidence threshold (was 0.55, now 0.45)
+    max_analysis_cost_per_decision: float = 0.15
+    min_confidence_threshold: float = 0.65
 
     # Cost control and market analysis frequency - MORE PERMISSIVE
     daily_ai_budget: float = 10.0  # INCREASED: Higher daily budget (was 5.0, now 10.0)
@@ -196,8 +193,8 @@ max_sector_exposure: float = 0.30       # SANE: 30% sector concentration (was 90
 # System performance objectives - MORE AGGRESSIVE FOR MORE TRADES
 target_sharpe: float = 0.3              # DECREASED: Lower Sharpe requirement (was 0.5, now 0.3)
 target_return: float = 0.15             # INCREASED: Higher return target (was 0.10, now 0.15)
-min_trade_edge: float = 0.08           # DECREASED: Lower edge requirement (was 0.15, now 8%)
-min_confidence_for_large_size: float = 0.50  # DECREASED: Lower confidence requirement (was 0.65, now 50%)
+min_trade_edge: float = 0.12            # 12% minimum edge — meaningful signal only
+min_confidence_for_large_size: float = 0.70  # Large size only for high confidence
 
 # === DYNAMIC EXIT STRATEGIES ===
 # Enhanced exit strategy settings - MORE AGGRESSIVE
