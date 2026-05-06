@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`max_time_to_expiry_days`**: 14 → 1 → 2h (0.0833 days)
 - **`min_trade_edge`**: 8% → 12%; `min_confidence_for_large_size`: 50% → 70% (`settings.py`)
 - **WEATHER** category remains hard-blocked regardless of score
+- **`MAX_BET_DOLLARS`**: hard cap of $5 per bet in Safe Compounder (replaces percentage-only sizing)
 
 ### Added
 - Initial public release of Kalshi AI Trading Bot

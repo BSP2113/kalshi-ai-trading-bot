@@ -81,7 +81,8 @@ SKIP_TITLE_PHRASES = [
 MIN_VOLUME = 500           # Raised from 10 — need real liquidity at $5k scale
 MIN_NO_ASK = 0.90          # Raised from $0.80 — near-certain outcomes only
 MIN_EDGE = 0.03            # Lowered from $0.05 to catch more opportunities
-MAX_POSITION_PCT = 0.03    # Lowered from 10% — max $150 per position at $5k
+MAX_POSITION_PCT = 0.03    # Percentage fallback (rarely binding given MAX_BET_DOLLARS)
+MAX_BET_DOLLARS = 5.00     # Hard cap: never spend more than $5 per bet
 USE_KELLY = True
 MIN_CONFIDENCE = 0.50      # Balanced: filters thin/wide markets without being too restrictive
 
@@ -837,6 +838,7 @@ class SafeCompounder:
         """Size each position using Kelly or fixed fraction."""
         total = portfolio + cash
         max_position_value = int(total * self.max_position_pct)
+        hard_cap_cents = int(MAX_BET_DOLLARS * 100)
         price = opp["our_price"]  # Already in dollar format
 
         if self.use_kelly:
@@ -845,9 +847,9 @@ class SafeCompounder:
             kf = kelly_fraction(true_prob, odds)
             half_kelly_f = kf * 0.5
             kelly_position = int(total * half_kelly_f)
-            position_value = min(kelly_position, max_position_value)
+            position_value = min(kelly_position, max_position_value, hard_cap_cents)
         else:
-            position_value = max_position_value
+            position_value = min(max_position_value, hard_cap_cents)
 
         # Convert price to cents for position calculation
         price_cents = int(price * 100)
