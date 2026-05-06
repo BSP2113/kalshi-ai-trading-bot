@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Tightened edge requirements**: `MIN_EDGE_REQUIREMENT` 4% → 8%; high-confidence edge 3% → 7%; medium-confidence edge 5% → 10%; low-confidence edge 8% → 15% (`edge_filter.py`)
 - **Raised confidence floor in edge filter**: `MIN_CONFIDENCE_FOR_TRADE` 35% → 60%
 - **Max hold time capped at 8 hours** (was 72h), floor raised to 2 hours (`stop_loss_calculator.py`)
-- **`max_time_to_expiry_days`**: 14 → 1
+- **`max_time_to_expiry_days`**: 14 → 1 → 2h (0.0833 days)
 - **`min_trade_edge`**: 8% → 12%; `min_confidence_for_large_size`: 50% → 70% (`settings.py`)
 - **WEATHER** category remains hard-blocked regardless of score
 

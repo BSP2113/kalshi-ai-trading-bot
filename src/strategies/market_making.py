@@ -26,6 +26,7 @@ from src.clients.xai_client import XAIClient
 from src.utils.database import DatabaseManager, Market
 from src.config.settings import settings
 from src.utils.logging_setup import get_trading_logger
+from src.strategies.category_scorer import infer_category, HARD_BLOCKED_CATEGORIES
 
 
 @dataclass
@@ -124,6 +125,12 @@ class AdvancedMarketMaker:
         
         for market in markets:
             try:
+                # Hard-block categories (e.g. WEATHER) before placing any orders
+                market_category = infer_category(market.market_id, getattr(market, 'title', ''))
+                if market_category in HARD_BLOCKED_CATEGORIES:
+                    self.logger.info(f"⛔ CATEGORY BLOCKED: {market.market_id} ({market_category})")
+                    continue
+
                 # Get current market data
                 market_data = await self.kalshi_client.get_market(market.market_id)
                 if not market_data:
@@ -638,7 +645,7 @@ async def run_market_making_strategy(
         # Get eligible markets (remove time restrictions!)
         markets = await db_manager.get_eligible_markets(
             volume_min=30000,  # Higher volume for market making (needs more liquidity)
-            max_days_to_expiry=365  # Accept any timeline
+            max_days_to_expiry=settings.trading.max_time_to_expiry_days
         )
         
         if not markets:

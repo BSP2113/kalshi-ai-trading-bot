@@ -33,6 +33,10 @@ W_WINRATE = 0.15
 # Minimum score to allow trading
 BLOCK_THRESHOLD = 30
 
+# Categories permanently barred from trading regardless of score or DB data.
+# User preference: weather markets are unpredictable and not worth betting on.
+HARD_BLOCKED_CATEGORIES: frozenset = frozenset(["WEATHER"])
+
 # Allocation tiers: (min_score, max_pct_of_portfolio)
 # Tiers align with BLOCK_THRESHOLD=30 so allocation 0% ↔ blocked
 ALLOCATION_TIERS = [
@@ -109,8 +113,10 @@ def get_allocation_pct(score: float) -> float:
     return 0.0
 
 
-def is_blocked(score: float) -> bool:
+def is_blocked(score: float, category: str = "") -> bool:
     """Return True if category should be blocked from trading."""
+    if category and category in HARD_BLOCKED_CATEGORIES:
+        return True
     return score < BLOCK_THRESHOLD or get_allocation_pct(score) == 0.0
 
 
@@ -214,8 +220,10 @@ class CategoryScorer:
 
     async def is_blocked(self, category: str) -> bool:
         """Return True if category is blocked."""
+        if category in HARD_BLOCKED_CATEGORIES:
+            return True
         score = await self.get_score(category)
-        return is_blocked(score)
+        return is_blocked(score, category)
 
     async def get_max_allocation_pct(self, category: str) -> float:
         """Return max allocation % for a category."""
@@ -451,7 +459,9 @@ def infer_category(ticker: str, title: str = "") -> str:
         return "MARKETS"
 
     # Weather / Climate
-    if any(x in ticker_upper for x in ["TEMP", "SNOW", "RAIN", "WEATHER"]):
+    if any(x in ticker_upper for x in ["TEMP", "SNOW", "RAIN", "WEATHER", "STORM", "HURRICANE", "TORNADO", "WIND", "PRECIP", "FROST", "FLOOD", "DROUGHT"]):
+        return "WEATHER"
+    if any(x in title_lower for x in ["weather", "temperature", "rainfall", "snowfall", "hurricane", "tornado", "storm", "precipitation", "flood", "drought"]):
         return "WEATHER"
 
     # Entertainment

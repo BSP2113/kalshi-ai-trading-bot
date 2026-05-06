@@ -16,7 +16,7 @@ from typing import Dict, List, Optional, Tuple
 
 import aiosqlite
 
-from src.strategies.category_scorer import CategoryScorer, infer_category, BLOCK_THRESHOLD, get_allocation_pct
+from src.strategies.category_scorer import CategoryScorer, infer_category, BLOCK_THRESHOLD, HARD_BLOCKED_CATEGORIES, get_allocation_pct
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +97,14 @@ class PortfolioEnforcer:
         Does NOT raise — callers decide whether to use BlockedTradeError.
         """
         cat = category or infer_category(ticker, title)
+
+        # --- Rule 0: Hard-blocked categories (user preference, overrides all scoring) ---
+        if cat in HARD_BLOCKED_CATEGORIES:
+            reason = f"Category '{cat}' is permanently blocked by user preference."
+            await self._log_blocked(ticker, cat, side, amount, reason, 0.0)
+            self._blocked_count += 1
+            return False, reason
+
         score = await self.scorer.get_score(cat)
         max_alloc = get_allocation_pct(score)
 

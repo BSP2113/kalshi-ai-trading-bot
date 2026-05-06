@@ -77,7 +77,7 @@ class TradingConfig:
     
     # Market filtering criteria — DISCIPLINED
     min_volume: float = 500.0           # SANE: Higher volume requirement (was 200 beast mode)
-    max_time_to_expiry_days: int = 1    # INTRADAY: Only markets expiring within 24 hours
+    max_time_to_expiry_days: float = 2 / 24  # Only markets expiring within 2 hours
     
     # AI decision making
     min_confidence_to_trade: float = 0.65   # Confident picks only — require meaningful conviction

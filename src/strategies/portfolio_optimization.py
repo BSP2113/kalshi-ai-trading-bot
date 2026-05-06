@@ -37,6 +37,7 @@ from src.clients.xai_client import XAIClient
 from src.config.settings import settings
 from src.utils.logging_setup import get_trading_logger
 from src.utils.market_prices import get_market_prices
+from src.strategies.category_scorer import infer_category, HARD_BLOCKED_CATEGORIES
 
 
 @dataclass
@@ -837,11 +838,17 @@ async def create_market_opportunities_from_markets(
     
     for market in markets:
         try:
+            # Hard-block categories (e.g. WEATHER) before any AI analysis
+            market_category = infer_category(market.market_id, getattr(market, 'title', ''))
+            if market_category in HARD_BLOCKED_CATEGORIES:
+                logger.info(f"⛔ CATEGORY BLOCKED: {market.market_id} ({market_category})")
+                continue
+
             # Get current market data
             market_data = await kalshi_client.get_market(market.market_id)
             if not market_data:
                 continue
-            
+
             # FIXED: Extract from nested 'market' object (same fix as immediate trading)
             market_info = market_data.get('market', {})
             market_prob = market_info.get('yes_price', 50) / 100
@@ -1293,8 +1300,8 @@ async def run_portfolio_optimization(
         
         # Get markets
         markets = await db_manager.get_eligible_markets(
-            volume_min=20000,  # Balanced volume for actual trading opportunities
-            max_days_to_expiry=365  # Accept any timeline with dynamic exits
+            volume_min=20000,
+            max_days_to_expiry=settings.trading.max_time_to_expiry_days
         )
         if not markets:
             logger.warning("No eligible markets for portfolio optimization")

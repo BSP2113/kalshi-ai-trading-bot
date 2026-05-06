@@ -24,11 +24,13 @@ Available via: python cli.py run --safe-compounder
 import asyncio
 import logging
 import math
+import re
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
 
+import aiohttp
 import aiosqlite
 
 logger = logging.getLogger(__name__)
@@ -51,19 +53,37 @@ SKIP_PREFIXES = [
     "KXWHATSON", "KXWOWHOCKEY",
     "KXMENTION", "KXTMENTION", "KXTRUMPMENTION", "KXTRUMPSAY",
     "KXSPEECH", "KXTSPEECH", "KXADDRESS",
+    # Weather — user preference: too unpredictable, not worth betting on
+    "KXHIGHT", "KXLOWT", "KXHIGHCHI", "KXHIGHMIA", "KXHIGHTATL",
+    "KXHIGHLAX", "KXHIGHPHIL", "KXHIGHTSATX", "KXHIGHTPHX", "KXHIGHTBOS",
+    "KXHIGHTOKC", "KXHIGHTDAL", "KXHIGHTDEN", "KXHIGHTHOU", "KXHIGHTSEA",
+    "KXHIGHTATL", "KXLOWTAUS", "KXLOWTDEN", "KXLOWTCHI", "KXLOWTMIA",
+    "KXLOWTHOU", "KXSNOW", "KXTEMP", "KXRAIN", "KXSTORM", "KXHURRICANE",
 ]
+
+# Crypto tickers that get a price-distance check instead of a blanket skip.
+# Only traded when the market threshold is >=CRYPTO_MARGIN away from spot price.
+CRYPTO_TICKER_MAP = {
+    "KXBTCD": "BTC", "KXBTC": "BTC",
+    "KXETHD": "ETH", "KXETH": "ETH",
+    "KXSOLD": "SOL", "KXSOL": "SOL",
+    "KXDOGE": "DOGE",
+}
+CRYPTO_MARGIN = 0.10  # Threshold must be >=10% away from current spot price (loosened from 15%)
 
 SKIP_TITLE_PHRASES = [
     "mention", "say in", "speech mention", "address mention",
+    "temperature", "rainfall", "snowfall", "hurricane", "tornado",
+    "flood", "drought", "precipitation",
 ]
 
 # Thresholds (all in dollar format 0.00-1.00)
-MIN_VOLUME = 10
-MIN_NO_ASK = 0.80      # Lowest NO ask must be > $0.80
-MIN_EDGE = 0.03        # Edge (EV - price) must be > $0.03 (loosened from $0.05, approved 2026-03-29)
-MAX_POSITION_PCT = 0.10    # Max 10% of portfolio per position
+MIN_VOLUME = 500           # Raised from 10 — need real liquidity at $5k scale
+MIN_NO_ASK = 0.90          # Raised from $0.80 — near-certain outcomes only
+MIN_EDGE = 0.03            # Lowered from $0.05 to catch more opportunities
+MAX_POSITION_PCT = 0.03    # Lowered from 10% — max $150 per position at $5k
 USE_KELLY = True
-MIN_CONFIDENCE = 0.4
+MIN_CONFIDENCE = 0.50      # Balanced: filters thin/wide markets without being too restrictive
 
 
 # -----------------------------------------------------------------------
@@ -73,6 +93,78 @@ MIN_CONFIDENCE = 0.4
 def should_skip(ticker: str) -> bool:
     upper = ticker.upper()
     return any(upper.startswith(p.upper()) for p in SKIP_PREFIXES)
+
+
+def parse_crypto_market(ticker: str) -> Optional[Tuple[str, str, float]]:
+    """
+    Parse a crypto Kalshi ticker into (symbol, direction, threshold).
+
+    KXBTCD-26MAY0517-T83249.99 -> ("BTC", "T", 83249.99)  T = YES if price exceeds threshold
+    KXBTCD-26MAY0517-B83249.99 -> ("BTC", "B", 83249.99)  B = YES if price stays below threshold
+
+    Returns None if ticker isn't a recognised crypto market.
+    """
+    upper = ticker.upper()
+    symbol = None
+    for prefix, sym in CRYPTO_TICKER_MAP.items():
+        if upper.startswith(prefix.upper()):
+            symbol = sym
+            break
+    if symbol is None:
+        return None
+    m = re.search(r"-([TB])([\d.]+)$", ticker)
+    if not m:
+        return None
+    return symbol, m.group(1), float(m.group(2))
+
+
+def is_crypto_threshold_safe(
+    symbol: str, direction: str, threshold: float, prices: Dict[str, float]
+) -> bool:
+    """
+    Return True if the market threshold is >=CRYPTO_MARGIN away from spot
+    in the direction that favours a NO win.
+
+    direction "T": market resolves YES if price > threshold.
+                   NO wins when price stays BELOW threshold.
+                   Safe when threshold is >=15% ABOVE current price.
+
+    direction "B": market resolves YES if price < threshold.
+                   NO wins when price stays ABOVE threshold.
+                   Safe when current price is >=15% ABOVE threshold.
+    """
+    current = prices.get(symbol)
+    if current is None or current <= 0:
+        return False
+    if direction == "T":
+        return threshold >= current * (1 + CRYPTO_MARGIN)
+    else:
+        return current >= threshold * (1 + CRYPTO_MARGIN)
+
+
+async def fetch_crypto_prices() -> Dict[str, float]:
+    """
+    Fetch BTC/ETH/SOL spot prices from CoinGecko (no API key required).
+    Returns {} on any failure so callers can fail-safe by skipping crypto.
+    """
+    url = "https://api.coingecko.com/api/v3/simple/price"
+    params = {"ids": "bitcoin,ethereum,solana,dogecoin", "vs_currencies": "usd"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url, params=params, timeout=aiohttp.ClientTimeout(total=6)
+            ) as resp:
+                data = await resp.json()
+                return {
+                    "BTC": float(data["bitcoin"]["usd"]),
+                    "ETH": float(data["ethereum"]["usd"]),
+                    "SOL": float(data["solana"]["usd"]),
+                    "DOGE": float(data["dogecoin"]["usd"]),
+                }
+    except Exception as e:
+        logger.warning("Could not fetch crypto prices (%s) — crypto markets skipped", e)
+        return {}
+
 
 
 def estimate_true_no_prob(yes_last: float, hours_to_expiry: float) -> float:
@@ -292,14 +384,23 @@ class SafeCompounder:
         print("🧹 Step 0: Cancel legacy YES orders...", flush=True)
         cancelled = await self._cancel_yes_orders()
 
+        # Fetch crypto spot prices once per cycle (used by Step 2 filter)
+        print("\n💱 Fetching crypto spot prices...", flush=True)
+        crypto_prices = await fetch_crypto_prices()
+        if crypto_prices:
+            price_str = " | ".join(f"{k}=${v:,.0f}" for k, v in crypto_prices.items())
+            print(f"  {price_str}", flush=True)
+        else:
+            print("  (unavailable — crypto markets will be skipped this cycle)", flush=True)
+
         # Step 1: Fetch all markets
         print("\n📡 Step 1: Fetching all active markets...", flush=True)
         markets = await self._fetch_all_markets()
         print(f"  Fetched {len(markets)} markets", flush=True)
 
         # Step 2: Filter NO candidates
-        print("\n🔍 Step 2: Finding NO-side candidates (YES ≤ $0.20)...", flush=True)
-        candidates = self._find_no_candidates(markets)
+        print("\n🔍 Step 2: Finding NO-side candidates (YES ≤ $0.10)...", flush=True)
+        candidates = self._find_no_candidates(markets, crypto_prices)
 
         # Step 3: Orderbook + edge check
         print(f"\n📊 Step 3: Checking orderbooks for edge ≥ ${self.min_edge:.2f}...", flush=True)
@@ -432,15 +533,25 @@ class SafeCompounder:
         logger.info("Fetched %d unique markets (%d from events)", len(all_markets), len(seen_tickers))
         return all_markets
 
-    def _find_no_candidates(self, markets: List[Dict]) -> List[Dict]:
+    def _find_no_candidates(
+        self, markets: List[Dict], crypto_prices: Optional[Dict[str, float]] = None
+    ) -> List[Dict]:
         """Filter markets to NO-side candidates."""
         candidates = []
         now = datetime.now(timezone.utc)
+        crypto_prices = crypto_prices or {}
 
         for m in markets:
             ticker = m.get("ticker", "")
             if should_skip(ticker):
                 continue
+
+            # Crypto gate: only allow if threshold is >=CRYPTO_MARGIN from spot price
+            crypto_info = parse_crypto_market(ticker)
+            if crypto_info is not None:
+                symbol, direction, threshold = crypto_info
+                if not is_crypto_threshold_safe(symbol, direction, threshold, crypto_prices):
+                    continue
 
             title_lower = m.get("title", "").lower()
             if any(phrase in title_lower for phrase in SKIP_TITLE_PHRASES):
@@ -453,7 +564,7 @@ class SafeCompounder:
             # Convert old cent format to dollar format if needed
             if yes_last > 1.0:
                 yes_last = yes_last / 100.0
-            if yes_last > 0.20:  # Only consider markets with YES ≤ $0.20
+            if yes_last > 0.10:  # Only consider markets with YES ≤ $0.10 (tightened from $0.20)
                 continue
 
             close_time = m.get("close_time", "")
@@ -477,11 +588,11 @@ class SafeCompounder:
                 "_days_to_expiry": round(hours_to_expiry / 24, 1),
             })
 
-        logger.info("Found %d NO-side candidates (YES last <= $0.20)", len(candidates))
+        logger.info("Found %d NO-side candidates (YES last <= $0.10)", len(candidates))
         
         # Sort by estimated edge potential: lowest YES price + highest volume + soonest expiry
         # Then cap to top 500 to keep orderbook checks under ~1 minute
-        MAX_ORDERBOOK_CHECKS = 200
+        MAX_ORDERBOOK_CHECKS = 500
         if len(candidates) > MAX_ORDERBOOK_CHECKS:
             candidates.sort(key=lambda c: (
                 -c["_true_no_prob"],  # Highest estimated NO probability first
@@ -632,10 +743,11 @@ class SafeCompounder:
             "total_deployed": 0,
         }
 
+        total = portfolio + cash
         print(
             f"\n{'='*70}\nPLACING MAKER ORDERS — Portfolio: ${portfolio/100:.2f} | "
             f"Cash: ${cash/100:.2f} | {'DRY RUN' if self.dry_run else 'LIVE'}\n"
-            f"Max per position: ${portfolio * self.max_position_pct / 100:.2f} ({self.max_position_pct*100:.0f}%)\n"
+            f"Max per position: ${total * self.max_position_pct / 100:.2f} ({self.max_position_pct*100:.0f}%)\n"
             f"{'='*70}\n",
             flush=True,
         )
@@ -723,7 +835,8 @@ class SafeCompounder:
 
     def _calculate_position_size(self, opp: Dict, portfolio: int, cash: int) -> int:
         """Size each position using Kelly or fixed fraction."""
-        max_position_value = int(portfolio * self.max_position_pct)
+        total = portfolio + cash
+        max_position_value = int(total * self.max_position_pct)
         price = opp["our_price"]  # Already in dollar format
 
         if self.use_kelly:
@@ -731,7 +844,7 @@ class SafeCompounder:
             odds = (1.0 - price) / price  # Dollar format
             kf = kelly_fraction(true_prob, odds)
             half_kelly_f = kf * 0.5
-            kelly_position = int(portfolio * half_kelly_f)
+            kelly_position = int(total * half_kelly_f)
             position_value = min(kelly_position, max_position_value)
         else:
             position_value = max_position_value
