@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (2026-05-08)
+- **WEATHER detection now matches Kalshi's actual ticker scheme**: `infer_category()` in `category_scorer.py` only matched the substring `TEMP`, so temperature markets like `KXHIGHNY-…` and `KXHIGHDEN-…` (high/low temp by city) were classified as `OTHER` and slipped past the `HARD_BLOCKED_CATEGORIES` check. Added prefix matches for `KXHIGH`, `KXLOW`, `KXTEMP`, `KXSNOW`, `KXRAIN`, `KXSTORM`, `KXHURRICANE`, `KXTORNADO`, `KXWIND`, `KXPRECIP`, `KXFROST`, `KXFLOOD`, `KXDROUGHT`, `KXWEATHER`. `safe_compounder.SKIP_PREFIXES` had the same gap (e.g. `KXHIGHT` did not match `KXHIGHNY`) and was collapsed to the same broad prefix list.
+
+### Fixed (2026-05-07)
+- **WEATHER block now enforced at execution layer**: hard-blocked categories were only checked in `market_making.py` and `portfolio_optimization.py`; `quick_flip_scalping.py`, `unified_trading_system.py`, `decide.py`, and `trade.py` bypassed the check entirely. Added the guard to `execute_position()` in `jobs/execute.py` so it applies to every code path.
+
 ### Changed (2026-05-05)
 - **Intraday-only mode**: market ingestion now filters to markets expiring within 24 hours; markets expiring in under 30 minutes are skipped (`ingest.py`)
 - **Raised confidence floor**: `min_confidence_to_trade` 45% → 65%; `min_confidence_threshold` 45% → 65% (`settings.py`)

@@ -277,7 +277,7 @@ The category scorer evaluates each Kalshi market category on a 0-100 scale based
 python cli.py scores
 ```
 
-This is one heuristic for category-level risk control. If it doesn't fit your strategy, ignore it — it's only used by the AI directional path.
+Soft score thresholds (tiers above) only gate the AI directional path. **Hard-blocked categories** (currently `WEATHER`) are enforced in `execute_position()` and cannot be bypassed regardless of which strategy places the trade.
 
 ---
 

@@ -53,12 +53,11 @@ SKIP_PREFIXES = [
     "KXWHATSON", "KXWOWHOCKEY",
     "KXMENTION", "KXTMENTION", "KXTRUMPMENTION", "KXTRUMPSAY",
     "KXSPEECH", "KXTSPEECH", "KXADDRESS",
-    # Weather — user preference: too unpredictable, not worth betting on
-    "KXHIGHT", "KXLOWT", "KXHIGHCHI", "KXHIGHMIA", "KXHIGHTATL",
-    "KXHIGHLAX", "KXHIGHPHIL", "KXHIGHTSATX", "KXHIGHTPHX", "KXHIGHTBOS",
-    "KXHIGHTOKC", "KXHIGHTDAL", "KXHIGHTDEN", "KXHIGHTHOU", "KXHIGHTSEA",
-    "KXHIGHTATL", "KXLOWTAUS", "KXLOWTDEN", "KXLOWTCHI", "KXLOWTMIA",
-    "KXLOWTHOU", "KXSNOW", "KXTEMP", "KXRAIN", "KXSTORM", "KXHURRICANE",
+    # Weather — user preference: too unpredictable, not worth betting on.
+    # Broad prefixes catch all city variants (KXHIGHNY, KXHIGHDEN, KXLOWCHI, ...).
+    "KXHIGH", "KXLOW", "KXTEMP", "KXSNOW", "KXRAIN", "KXSTORM",
+    "KXHURRICANE", "KXTORNADO", "KXWIND", "KXPRECIP",
+    "KXFROST", "KXFLOOD", "KXDROUGHT", "KXWEATHER",
 ]
 
 # Crypto tickers that get a price-distance check instead of a blanket skip.

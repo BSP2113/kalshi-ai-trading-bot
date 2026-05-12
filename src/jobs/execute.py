@@ -13,6 +13,7 @@ from src.config.settings import settings
 from src.utils.logging_setup import get_trading_logger
 from src.clients.kalshi_client import KalshiClient, KalshiAPIError
 from src.utils.market_prices import get_market_prices, is_tradeable_market
+from src.strategies.category_scorer import infer_category, HARD_BLOCKED_CATEGORIES
 
 async def execute_position(
     position: Position, 
@@ -35,7 +36,14 @@ async def execute_position(
     logger = get_trading_logger("trade_execution")
     logger.info(f"🎯 Executing position for market: {position.market_id}")
     logger.info(f"🎛️ Live mode: {live_mode}")
-    
+
+    category = infer_category(position.market_id)
+    if category in HARD_BLOCKED_CATEGORIES:
+        logger.warning(
+            f"🚫 Blocked {position.market_id}: category '{category}' is hard-blocked. Skipping."
+        )
+        return False
+
     if live_mode:
         logger.warning(f"💰 PLACING LIVE ORDER - Real money will be used for {position.market_id}")
         try:

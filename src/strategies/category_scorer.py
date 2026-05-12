@@ -459,9 +459,17 @@ def infer_category(ticker: str, title: str = "") -> str:
         return "MARKETS"
 
     # Weather / Climate
-    if any(x in ticker_upper for x in ["TEMP", "SNOW", "RAIN", "WEATHER", "STORM", "HURRICANE", "TORNADO", "WIND", "PRECIP", "FROST", "FLOOD", "DROUGHT"]):
+    # Kalshi temperature markets use KXHIGH<CITY> / KXLOW<CITY> (e.g. KXHIGHNY, KXHIGHDEN),
+    # which don't contain the substring "TEMP" — match by prefix.
+    if any(ticker_upper.startswith(p) for p in [
+        "KXHIGH", "KXLOW", "KXTEMP", "KXSNOW", "KXRAIN", "KXSTORM",
+        "KXHURRICANE", "KXTORNADO", "KXWIND", "KXPRECIP",
+        "KXFROST", "KXFLOOD", "KXDROUGHT", "KXWEATHER",
+    ]):
         return "WEATHER"
-    if any(x in title_lower for x in ["weather", "temperature", "rainfall", "snowfall", "hurricane", "tornado", "storm", "precipitation", "flood", "drought"]):
+    if any(x in ticker_upper for x in ["TEMP", "SNOW", "RAIN", "WEATHER", "STORM", "HURRICANE", "TORNADO", "PRECIP", "FROST", "FLOOD", "DROUGHT"]):
+        return "WEATHER"
+    if any(x in title_lower for x in ["weather", "temperature", "rainfall", "snowfall", "hurricane", "tornado", "storm", "precipitation", "flood", "drought", "high temp", "low temp"]):
         return "WEATHER"
 
     # Entertainment
