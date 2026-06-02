@@ -95,14 +95,14 @@ SKIP_TITLE_PHRASES = [
 MIN_VOLUME = 500           # Raised from 10 — need real liquidity at $5k scale
 MIN_NO_ASK = 0.90          # Raised from $0.80 — near-certain outcomes only
 MIN_EDGE = 0.03            # Lowered from $0.05 to catch more opportunities
-MAX_POSITION_PCT = 0.03    # 3% of bankroll per position — sole binding cap
-# Absolute hard dollar cap per position. Set to None: now that trading is
-# restricted to the proven SAFE_SERIES whitelist, 3% of bankroll is the
-# sole sizing cap so position size scales with equity instead of being
-# pinned at a fixed dollar amount. (Previously $25, which bound tighter
-# than 3% at the ~$1,400 bankroll and held effective sizing to ~1.8%.)
-# Reintroduce a dollar cap only if a single series shows it needs one.
-MAX_POSITION_DOLLARS = None
+MAX_POSITION_PCT = 0.03    # Percentage cap, applied alongside the dollar cap
+# Absolute hard dollar cap per position. Applied as min(pct × bankroll,
+# MAX_POSITION_DOLLARS). At the ~$1,400 bankroll the absolute cap binds
+# (3% = ~$42, $25 absolute is tighter); below ~$830 bankroll the
+# percentage cap binds first. Caps tail risk on the 22:1 payoff
+# asymmetry — a losing trade is ~$25 instead of ~$42 uncapped.
+# Raise this as the whitelist accumulates evidence at scale.
+MAX_POSITION_DOLLARS = 25.0
 USE_KELLY = True
 MIN_CONFIDENCE = 0.50      # Balanced: filters thin/wide markets without being too restrictive
 
