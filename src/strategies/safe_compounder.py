@@ -95,8 +95,14 @@ SKIP_TITLE_PHRASES = [
 MIN_VOLUME = 500           # Raised from 10 — need real liquidity at $5k scale
 MIN_NO_ASK = 0.90          # Raised from $0.80 — near-certain outcomes only
 MIN_EDGE = 0.03            # Lowered from $0.05 to catch more opportunities
-MAX_POSITION_PCT = 0.03    # Percentage fallback (rarely binding given MAX_BET_DOLLARS)
-MAX_BET_DOLLARS = 5.00     # Hard cap: never spend more than $5 per bet
+MAX_POSITION_PCT = 0.03    # 3% of bankroll per position — sole binding cap
+# Absolute hard dollar cap per position. Set to None: now that trading is
+# restricted to the proven SAFE_SERIES whitelist, 3% of bankroll is the
+# sole sizing cap so position size scales with equity instead of being
+# pinned at a fixed dollar amount. (Previously $25, which bound tighter
+# than 3% at the ~$1,400 bankroll and held effective sizing to ~1.8%.)
+# Reintroduce a dollar cap only if a single series shows it needs one.
+MAX_POSITION_DOLLARS = None
 USE_KELLY = True
 MIN_CONFIDENCE = 0.50      # Balanced: filters thin/wide markets without being too restrictive
 
@@ -993,10 +999,25 @@ class SafeCompounder:
         cap_mode = "DRY-LOG ONLY" if EVENT_CAP_DRY_RUN else "ENFORCED"
         reserve_mode = "DRY-LOG ONLY" if CASH_RESERVE_DRY_RUN else "ENFORCED"
         min_cash_cents = int(total * CASH_RESERVE_PCT)
+        pct_cap_dollars = total * self.max_position_pct / 100
+        if MAX_POSITION_DOLLARS is None:
+            position_cap_binding = pct_cap_dollars
+            position_cap_source = f"{self.max_position_pct*100:.0f}% × bankroll"
+            abs_cap_label = "none"
+        else:
+            position_cap_binding = min(pct_cap_dollars, MAX_POSITION_DOLLARS)
+            position_cap_source = (
+                f"${MAX_POSITION_DOLLARS:.2f} absolute"
+                if MAX_POSITION_DOLLARS < pct_cap_dollars
+                else f"{self.max_position_pct*100:.0f}% × bankroll"
+            )
+            abs_cap_label = f"${MAX_POSITION_DOLLARS:.2f}"
         print(
             f"\n{'='*70}\nPLACING MAKER ORDERS — Portfolio: ${portfolio/100:.2f} | "
             f"Cash: ${cash/100:.2f} | {'DRY RUN' if self.dry_run else 'LIVE'}\n"
-            f"Max per position: ${total * self.max_position_pct / 100:.2f} ({self.max_position_pct*100:.0f}%)\n"
+            f"Max per position: ${position_cap_binding:.2f} "
+            f"(binding: {position_cap_source}; other: "
+            f"{abs_cap_label} abs / ${pct_cap_dollars:.2f} pct)\n"
             f"Per-event cap: {EVENT_CAP_PCT*100:.0f}% of bankroll ({cap_mode})\n"
             f"Cash reserve: {CASH_RESERVE_PCT*100:.0f}% of bankroll = ${min_cash_cents/100:.2f} ({reserve_mode})\n"
             f"{'='*70}\n",
@@ -1128,10 +1149,15 @@ class SafeCompounder:
         return stats
 
     def _calculate_position_size(self, opp: Dict, portfolio: int, cash: int) -> int:
-        """Size each position using Kelly or fixed fraction."""
+        """Size each position using Kelly or fixed fraction, capped by both
+        the percentage-of-bankroll limit and the absolute dollar limit."""
         total = portfolio + cash
-        max_position_value = int(total * self.max_position_pct)
-        hard_cap_cents = int(MAX_BET_DOLLARS * 100)
+        pct_cap_cents = int(total * self.max_position_pct)
+        if MAX_POSITION_DOLLARS is None:
+            max_position_value = pct_cap_cents
+        else:
+            abs_cap_cents = int(MAX_POSITION_DOLLARS * 100)
+            max_position_value = min(pct_cap_cents, abs_cap_cents)
         price = opp["our_price"]  # Already in dollar format
 
         if self.use_kelly:
@@ -1140,9 +1166,9 @@ class SafeCompounder:
             kf = kelly_fraction(true_prob, odds)
             half_kelly_f = kf * 0.5
             kelly_position = int(total * half_kelly_f)
-            position_value = min(kelly_position, max_position_value, hard_cap_cents)
+            position_value = min(kelly_position, max_position_value)
         else:
-            position_value = min(max_position_value, hard_cap_cents)
+            position_value = max_position_value
 
         # Convert price to cents for position calculation
         price_cents = int(price * 100)
