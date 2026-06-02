@@ -39,26 +39,35 @@ logger = logging.getLogger(__name__)
 # Configuration
 # -----------------------------------------------------------------------
 
-# Skip sports/entertainment — too unpredictable for "near-certain" plays
-SKIP_PREFIXES = [
-    "KXNBA", "KXNFL", "KXNHL", "KXMLB", "KXUFC", "KXPGA", "KXATP",
-    "KXEPL", "KXUCL", "KXLIGA", "KXSERIE", "KXBUNDES", "KXLIGUE",
-    "KXWC", "KXMARMAD", "KXMAKEMARMAD", "KXWMARMAD", "KXRT-",
-    "KXPERFORM", "KXACTOR", "KXBOND-", "KXOSCAR", "KXBAFTA", "KXSAG",
-    "KXSNL", "KXSURVIVOR", "KXTRAITORS", "KXDAILY",
-    "KXALBUM", "KXSONG", "KX1SONG", "KX20SONG", "KXTOUR-",
-    "KXFEATURE", "KXGTA", "KXBIG10", "KXBIG12", "KXACC", "KXSEC",
-    "KXAAC", "KXBIGEAST", "KXNCAAM", "KXCOACH", "KXMV",
-    "KXCHESS", "KXBELGIAN", "KXEFL", "KXSUPER", "KXLAMIN",
-    "KXWHATSON", "KXWOWHOCKEY",
-    "KXMENTION", "KXTMENTION", "KXTRUMPMENTION", "KXTRUMPSAY",
-    "KXSPEECH", "KXTSPEECH", "KXADDRESS",
-    # Weather — user preference: too unpredictable, not worth betting on.
-    # Broad prefixes catch all city variants (KXHIGHNY, KXHIGHDEN, KXLOWCHI, ...).
-    "KXHIGH", "KXLOW", "KXTEMP", "KXSNOW", "KXRAIN", "KXSTORM",
-    "KXHURRICANE", "KXTORNADO", "KXWIND", "KXPRECIP",
-    "KXFROST", "KXFLOOD", "KXDROUGHT", "KXWEATHER",
-]
+# Series whitelist. The bot only trades markets whose ticker starts with
+# one of these prefixes followed by "-" (so KXWTI matches KXWTI-... but
+# not KXWTIW-... or KXWTIMINM-...). Replaces the previous SKIP_PREFIXES
+# blacklist, which was reactive: we kept losing money on new Kalshi
+# series until each one was banned by hand.
+#
+# Selection: n>=10 settlements AND net-positive realized P&L. Across 666
+# historical trades, these 12 series produced +$83 on ~$1,500 cost while
+# the excluded long tail of 121 distinct series produced -$239. If the
+# whitelist had been enforced from the start, lifetime P&L would have
+# been +$83 instead of -$156.
+SAFE_SERIES = frozenset({
+    # Energy & commodities — 90%+ of historical volume.
+    "KXWTI",            # WTI daily            n=70  +$13.70  +3.9%/$
+    "KXWTIW",           # WTI weekly           n=41  +$ 9.46  +4.2%/$
+    "KXBRENTD",         # Brent daily          n=42  +$ 4.58  +6.2%/$
+    "KXBRENTW",         # Brent weekly         n=18  +$ 3.44  +6.3%/$
+    "KXAAAGASD",        # AAA gas daily        n=27  +$19.92  +6.3%/$
+    "KXAAAGASW",        # AAA gas weekly       n=17  +$12.42  +6.8%/$
+    "KXSILVERD",        # Silver daily         n=18  +$ 1.78  +7.1%/$
+    # Equity index.
+    "KXINXU",           # S&P futures          n=44  +$ 3.33  +2.6%/$
+    # Crypto dailies — still gated by 10% spot-distance check below.
+    "KXBTC",            # BTC daily            n=18  +$ 8.13 +12.2%/$
+    "KXETH",            # ETH daily            n=10  +$ 2.85  +5.0%/$
+    # Polling / annual events — modest diversification away from energy.
+    "KXAPRPOTUS",       # Trump approval poll  n=10  +$ 1.86  +5.9%/$
+    "KXEUROVISIONRANK", # Eurovision rankings  n=11  +$ 1.95  +5.9%/$
+})
 
 # Crypto tickers that get a price-distance check instead of a blanket skip.
 # Only traded when the market threshold is >=CRYPTO_MARGIN away from spot price.
@@ -67,6 +76,9 @@ CRYPTO_TICKER_MAP = {
     "KXETHD": "ETH", "KXETH": "ETH",
     "KXSOLD": "SOL", "KXSOL": "SOL",
     "KXDOGE": "DOGE",
+    "KXBNB": "BNB",
+    "KXXRP": "XRP",
+    "KXHYPE": "HYPE",
 }
 CRYPTO_MARGIN = 0.10  # Threshold must be >=10% away from current spot price (loosened from 15%)
 
@@ -90,9 +102,12 @@ MIN_CONFIDENCE = 0.50      # Balanced: filters thin/wide markets without being t
 # Core math
 # -----------------------------------------------------------------------
 
-def should_skip(ticker: str) -> bool:
+def in_whitelist(ticker: str) -> bool:
+    """True when the ticker belongs to a SAFE_SERIES prefix. Matches on
+    `prefix + "-"` so KXWTI does not accidentally swallow KXWTIW or
+    KXWTIMINM — Kalshi tickers always have a dash after the series root."""
     upper = ticker.upper()
-    return any(upper.startswith(p.upper()) for p in SKIP_PREFIXES)
+    return any(upper.startswith(p + "-") for p in SAFE_SERIES)
 
 
 def parse_crypto_market(ticker: str) -> Optional[Tuple[str, str, float]]:
@@ -148,18 +163,29 @@ async def fetch_crypto_prices() -> Dict[str, float]:
     Returns {} on any failure so callers can fail-safe by skipping crypto.
     """
     url = "https://api.coingecko.com/api/v3/simple/price"
-    params = {"ids": "bitcoin,ethereum,solana,dogecoin", "vs_currencies": "usd"}
+    coin_map = {
+        "BTC": "bitcoin",
+        "ETH": "ethereum",
+        "SOL": "solana",
+        "DOGE": "dogecoin",
+        "BNB": "binancecoin",
+        "XRP": "ripple",
+        "HYPE": "hyperliquid",
+    }
+    params = {"ids": ",".join(coin_map.values()), "vs_currencies": "usd"}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 url, params=params, timeout=aiohttp.ClientTimeout(total=6)
             ) as resp:
                 data = await resp.json()
+                # Any missing coin (CoinGecko outage, delisting, new asset) is
+                # simply omitted — its markets will fail is_crypto_threshold_safe
+                # and be skipped, which is the safe behaviour.
                 return {
-                    "BTC": float(data["bitcoin"]["usd"]),
-                    "ETH": float(data["ethereum"]["usd"]),
-                    "SOL": float(data["solana"]["usd"]),
-                    "DOGE": float(data["dogecoin"]["usd"]),
+                    sym: float(data[gid]["usd"])
+                    for sym, gid in coin_map.items()
+                    if gid in data and "usd" in data[gid]
                 }
     except Exception as e:
         logger.warning("Could not fetch crypto prices (%s) — crypto markets skipped", e)
@@ -543,10 +569,11 @@ class SafeCompounder:
 
         for m in markets:
             ticker = m.get("ticker", "")
-            if should_skip(ticker):
+            if not in_whitelist(ticker):
                 continue
 
-            # Crypto gate: only allow if threshold is >=CRYPTO_MARGIN from spot price
+            # Crypto gate: even within whitelisted KXBTC / KXETH, require
+            # threshold to be >=CRYPTO_MARGIN from spot price.
             crypto_info = parse_crypto_market(ticker)
             if crypto_info is not None:
                 symbol, direction, threshold = crypto_info
