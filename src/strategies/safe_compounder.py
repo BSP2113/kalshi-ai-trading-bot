@@ -22,11 +22,14 @@ Available via: python cli.py run --safe-compounder
 """
 
 import asyncio
+import json
 import logging
 import math
+import os
 import re
 import time
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -97,6 +100,31 @@ MAX_BET_DOLLARS = 5.00     # Hard cap: never spend more than $5 per bet
 USE_KELLY = True
 MIN_CONFIDENCE = 0.50      # Balanced: filters thin/wide markets without being too restrictive
 
+# Per-event concentration cap. Multiple Kalshi markets in the same event
+# (e.g. WTI strikes around one price) are correlated — they all settle on
+# the same underlying print. Cap total bankroll exposure per event.
+EVENT_CAP_PCT = 0.15
+EVENT_CAP_DRY_RUN = False  # When True, log would-have-blocked but still place.
+
+# Cash reserve breaker. Keep at least this fraction of total bankroll
+# (cash + portfolio_value) as uncommitted cash. Prevents the bot from
+# fully deploying — without this, available cash drains to ~0 and Kalshi
+# starts rejecting orders with HTTP 400 "insufficient_balance" (which
+# spammed the log on 26MAY29 — 30+ rejections in a single cycle).
+CASH_RESERVE_PCT = 0.10
+CASH_RESERVE_DRY_RUN = False  # When True, log would-have-blocked but still place.
+
+# Drawdown breaker. Halts new order placement if total equity falls
+# DRAWDOWN_THRESHOLD below the all-time peak. Peak is seeded from current
+# equity on first run and only ratchets up. Trip is STICKY — once tripped,
+# the bot stays halted until BREAKERS_STATE_PATH is deleted (manual reset
+# is a feature, not a bug: when this trips, the strategy needs human
+# review, not a self-resume that walks back into the same trade).
+# Targets slow-bleed accumulation (which daily-loss limits miss), not
+# single-day blowups.
+DRAWDOWN_THRESHOLD = 0.10
+BREAKERS_STATE_PATH = "data/safe_compounder_breakers.json"
+
 
 # -----------------------------------------------------------------------
 # Core math
@@ -108,6 +136,140 @@ def in_whitelist(ticker: str) -> bool:
     KXWTIMINM — Kalshi tickers always have a dash after the series root."""
     upper = ticker.upper()
     return any(upper.startswith(p + "-") for p in SAFE_SERIES)
+
+
+def _event_of(ticker: str) -> str:
+    """Strip the trailing strike suffix to get the event ticker.
+    e.g. KXWTI-26MAY28H17-T84.99 -> KXWTI-26MAY28H17
+    All markets in one event share the same underlying — correlated risk."""
+    return ticker.rsplit("-", 1)[0]
+
+
+def _load_breakers_state() -> Dict:
+    try:
+        with open(BREAKERS_STATE_PATH, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_breakers_state(state: Dict) -> None:
+    os.makedirs(os.path.dirname(BREAKERS_STATE_PATH) or ".", exist_ok=True)
+    with open(BREAKERS_STATE_PATH, "w") as f:
+        json.dump(state, f, indent=2)
+
+
+def check_drawdown_breaker(cash_cents: int, portfolio_cents: int) -> Tuple[bool, str]:
+    """Returns (allowed_to_place_orders, status_message).
+
+    Reads/writes BREAKERS_STATE_PATH as a side effect:
+    - First call ever: seeds peak from current equity.
+    - Equity above stored peak: ratchets peak up.
+    - Equity below peak by DRAWDOWN_THRESHOLD: flips tripped=True.
+    - tripped=True: stays tripped until the state file is deleted.
+    """
+    equity = cash_cents + portfolio_cents
+    state = _load_breakers_state()
+    now_utc = datetime.now(timezone.utc).isoformat()
+
+    # First run — seed peak from current.
+    if "peak_equity_cents" not in state:
+        state.update({
+            "peak_equity_cents": equity,
+            "peak_timestamp_utc": now_utc,
+            "tripped": False,
+        })
+        _save_breakers_state(state)
+        return True, (
+            f"Drawdown breaker: seeded peak at ${equity/100:.2f} "
+            f"(state file created at {BREAKERS_STATE_PATH})"
+        )
+
+    # Sticky trip — manual reset only.
+    if state.get("tripped", False):
+        return False, (
+            f"Drawdown breaker TRIPPED at {state.get('tripped_at_utc')}: "
+            f"equity ${state.get('tripped_equity_cents', 0)/100:.2f} = "
+            f"-{state.get('tripped_drawdown_pct', 0)*100:.1f}% from peak "
+            f"${state['peak_equity_cents']/100:.2f}. "
+            f"Manual reset required — delete {BREAKERS_STATE_PATH}."
+        )
+
+    peak = state["peak_equity_cents"]
+
+    # New peak — ratchet up.
+    if equity > peak:
+        state["peak_equity_cents"] = equity
+        state["peak_timestamp_utc"] = now_utc
+        _save_breakers_state(state)
+        return True, (
+            f"Drawdown breaker: new peak ${equity/100:.2f} "
+            f"(previous ${peak/100:.2f})"
+        )
+
+    # Below peak — check drawdown.
+    drawdown = (peak - equity) / peak if peak > 0 else 0.0
+    if drawdown >= DRAWDOWN_THRESHOLD:
+        state.update({
+            "tripped": True,
+            "tripped_at_utc": now_utc,
+            "tripped_equity_cents": equity,
+            "tripped_drawdown_pct": drawdown,
+        })
+        _save_breakers_state(state)
+        return False, (
+            f"Drawdown breaker TRIPPED: equity ${equity/100:.2f} = "
+            f"-{drawdown*100:.1f}% from peak ${peak/100:.2f} "
+            f"(threshold {DRAWDOWN_THRESHOLD*100:.0f}%). "
+            f"Manual reset — delete {BREAKERS_STATE_PATH}."
+        )
+
+    return True, (
+        f"Drawdown breaker OK: equity ${equity/100:.2f}, peak ${peak/100:.2f} "
+        f"(-{drawdown*100:.1f}% / threshold -{DRAWDOWN_THRESHOLD*100:.0f}%)"
+    )
+
+
+def _to_float(v) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _pos_count(p: Dict) -> float:
+    """Position count, supporting both legacy int 'position' and new 'position_fp'."""
+    if "position_fp" in p:
+        return _to_float(p["position_fp"])
+    return _to_float(p.get("position", 0))
+
+
+def _pos_cost_cents(p: Dict) -> int:
+    """Cost basis of an open position in cents. Uses market_exposure_dollars
+    (cash currently committed to the position). Falls back to face value if
+    that field is missing."""
+    exposure = p.get("market_exposure_dollars")
+    if exposure is not None:
+        return int(round(_to_float(exposure) * 100))
+    # Fallback: count * 100¢ (face value — conservative overestimate)
+    return int(abs(_pos_count(p)) * 100)
+
+
+def _order_cost_cents(o: Dict) -> int:
+    """Committed cost of a resting order in cents. Defensive against the API
+    returning either cent-int or dollar-string price fields."""
+    count = _to_float(o.get("remaining_count", o.get("count", 0)))
+    # Try dollar-string fields first, fall back to legacy cent ints.
+    side = o.get("side", "no")
+    if side == "no":
+        price = o.get("no_price_dollars")
+        if price is not None:
+            return int(round(count * _to_float(price) * 100))
+        return int(count * _to_float(o.get("no_price", 0)))
+    price = o.get("yes_price_dollars")
+    if price is not None:
+        return int(round(count * _to_float(price) * 100))
+    return int(count * _to_float(o.get("yes_price", 0)))
 
 
 def parse_crypto_market(ticker: str) -> Optional[Tuple[str, str, float]]:
@@ -464,6 +626,16 @@ class SafeCompounder:
         print(f"  Orders placed:        {stats['placed']}", flush=True)
         print(f"  Instantly filled:     {stats['filled']}", flush=True)
         print(f"  Skipped (existing):   {stats['skipped_existing']}", flush=True)
+        cap_label = "would-block" if EVENT_CAP_DRY_RUN else "blocked"
+        print(
+            f"  Event cap {cap_label:<12}{stats.get('event_cap_dry_warn', 0) if EVENT_CAP_DRY_RUN else stats.get('skipped_event_cap', 0)}",
+            flush=True,
+        )
+        reserve_label = "would-block" if CASH_RESERVE_DRY_RUN else "blocked"
+        print(
+            f"  Cash reserve {reserve_label:<9}{stats.get('cash_reserve_dry_warn', 0) if CASH_RESERVE_DRY_RUN else stats.get('skipped_cash_reserve', 0)}",
+            flush=True,
+        )
         print(f"  Errors:               {stats['errors']}", flush=True)
         print(f"  Capital deployed:     ${stats['total_deployed']/100:.2f}", flush=True)
         print(f"  Potential profit:     ${stats['total_potential_profit']/100:.2f}", flush=True)
@@ -743,14 +915,38 @@ class SafeCompounder:
         self, opportunities: List[Dict], portfolio: int, cash: int
     ) -> Dict:
         """Place NO-side resting orders at lowest_ask - 1¢."""
+        # --- Breaker #3: drawdown ---
+        # Checked once per cycle, before any placement work or API calls
+        # for positions/orders. If tripped, we short-circuit and return
+        # an empty stats dict so the calling loop continues to scan
+        # (cheap) but skips placement (expensive and risky).
+        allowed, msg = check_drawdown_breaker(cash, portfolio)
+        print(f"  {'✅' if allowed else '🛑'} {msg}", flush=True)
+        if not allowed:
+            return {
+                "placed": 0,
+                "skipped_existing": 0,
+                "skipped_size": 0,
+                "skipped_event_cap": 0,
+                "event_cap_dry_warn": 0,
+                "skipped_cash_reserve": 0,
+                "cash_reserve_dry_warn": 0,
+                "skipped_drawdown": 1,
+                "filled": 0,
+                "errors": 0,
+                "total_potential_profit": 0,
+                "total_deployed": 0,
+            }
+
         # Get existing positions and orders
         try:
             positions_resp = await self.client.get_positions()
             positions = positions_resp.get("market_positions", [])
             pos_tickers = {
-                p["ticker"] for p in positions if abs(p.get("position", 0)) > 0
+                p["ticker"] for p in positions if abs(_pos_count(p)) > 0
             }
         except Exception:
+            positions = []
             pos_tickers = set()
 
         try:
@@ -758,12 +954,35 @@ class SafeCompounder:
             existing_orders = orders_resp.get("orders", [])
             ord_tickers = {o["ticker"] for o in existing_orders}
         except Exception:
+            existing_orders = []
             ord_tickers = set()
+
+        # Build per-event exposure map (in cents) from current open positions.
+        # Resting orders not yet filled contribute their committed cost too.
+        event_exposure_cents: Dict[str, int] = defaultdict(int)
+        for p in positions:
+            if abs(_pos_count(p)) == 0:
+                continue
+            event_exposure_cents[_event_of(p["ticker"])] += _pos_cost_cents(p)
+        for o in existing_orders:
+            event_exposure_cents[_event_of(o["ticker"])] += _order_cost_cents(o)
+
+        # Track in-cycle additions so multiple orders to the same event stack.
+        cycle_event_adds: Dict[str, int] = defaultdict(int)
+        # Cash committed during this cycle. Kalshi reserves cash on maker-order
+        # placement (not just on fill), so each placed order reduces the
+        # effective cash available for subsequent orders in the same cycle.
+        cycle_cash_spent_cents = 0
 
         stats = {
             "placed": 0,
             "skipped_existing": 0,
             "skipped_size": 0,
+            "skipped_event_cap": 0,
+            "event_cap_dry_warn": 0,
+            "skipped_cash_reserve": 0,
+            "cash_reserve_dry_warn": 0,
+            "skipped_drawdown": 0,  # 0 here: breaker not tripped this cycle
             "filled": 0,
             "errors": 0,
             "total_potential_profit": 0,
@@ -771,10 +990,15 @@ class SafeCompounder:
         }
 
         total = portfolio + cash
+        cap_mode = "DRY-LOG ONLY" if EVENT_CAP_DRY_RUN else "ENFORCED"
+        reserve_mode = "DRY-LOG ONLY" if CASH_RESERVE_DRY_RUN else "ENFORCED"
+        min_cash_cents = int(total * CASH_RESERVE_PCT)
         print(
             f"\n{'='*70}\nPLACING MAKER ORDERS — Portfolio: ${portfolio/100:.2f} | "
             f"Cash: ${cash/100:.2f} | {'DRY RUN' if self.dry_run else 'LIVE'}\n"
             f"Max per position: ${total * self.max_position_pct / 100:.2f} ({self.max_position_pct*100:.0f}%)\n"
+            f"Per-event cap: {EVENT_CAP_PCT*100:.0f}% of bankroll ({cap_mode})\n"
+            f"Cash reserve: {CASH_RESERVE_PCT*100:.0f}% of bankroll = ${min_cash_cents/100:.2f} ({reserve_mode})\n"
             f"{'='*70}\n",
             flush=True,
         )
@@ -794,6 +1018,49 @@ class SafeCompounder:
             price = opp["our_price"]
             cost = contracts * price * 100  # Convert dollars to cents for cost calculation
             profit = contracts * opp["profit"] * 100  # Convert dollars to cents for profit calculation
+
+            # --- Breaker #1: per-event concentration cap ---
+            event = _event_of(ticker)
+            existing_exp = event_exposure_cents[event] + cycle_event_adds[event]
+            projected_exp = existing_exp + cost
+            cap_cents = total * EVENT_CAP_PCT
+            if projected_exp > cap_cents:
+                msg = (
+                    f"  🟡 EVENT-CAP {'WOULD-BLOCK' if EVENT_CAP_DRY_RUN else 'BLOCKED'}: "
+                    f"{event} → ${projected_exp/100:.2f} "
+                    f"({projected_exp/total*100:.1f}% of bankroll, cap {EVENT_CAP_PCT*100:.0f}%) | "
+                    f"this order: NO x{contracts} @ ${price:.2f} on {ticker}"
+                )
+                print(msg, flush=True)
+                if EVENT_CAP_DRY_RUN:
+                    stats["event_cap_dry_warn"] += 1
+                    # Fall through and place the order anyway — observation mode.
+                else:
+                    stats["skipped_event_cap"] += 1
+                    continue
+
+            # --- Breaker #2: cash reserve ---
+            # Projected cash if this order is placed (Kalshi reserves cash
+            # on placement, not on fill). Block if it would push effective
+            # cash below the configured reserve.
+            effective_cash_after = cash - cycle_cash_spent_cents - cost
+            if effective_cash_after < min_cash_cents:
+                msg = (
+                    f"  🟡 CASH-RESERVE {'WOULD-BLOCK' if CASH_RESERVE_DRY_RUN else 'BLOCKED'}: "
+                    f"effective cash ${effective_cash_after/100:.2f} < reserve "
+                    f"${min_cash_cents/100:.2f} ({CASH_RESERVE_PCT*100:.0f}% of bankroll) | "
+                    f"this order: NO x{contracts} @ ${price:.2f} on {ticker} (cost ${cost/100:.2f})"
+                )
+                print(msg, flush=True)
+                if CASH_RESERVE_DRY_RUN:
+                    stats["cash_reserve_dry_warn"] += 1
+                    # Fall through and place anyway — observation mode.
+                else:
+                    stats["skipped_cash_reserve"] += 1
+                    continue
+
+            cycle_event_adds[event] += cost
+            cycle_cash_spent_cents += cost
 
             if self.dry_run:
                 kelly_info = ""
